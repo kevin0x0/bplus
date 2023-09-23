@@ -25,8 +25,15 @@ void bplus_delete(BplusTreeNode* node);
 
 BplusTreeNode* bplus_insert(BplusTreeNode* root, KeyType key);
 BplusTreeNode* bplus_erase(BplusTreeNode* root, BplusIter iter);
+
+BplusIter bplus_search(BplusTreeNode* node, KeyType key);
 BplusIter bplus_search_above(BplusTreeNode* node, KeyType key);
 BplusIter bplus_search_not_below(BplusTreeNode* node, KeyType key);
+
+static inline KeyType bplus_iter_get_key(BplusIter iter);
+static inline bool bplus_iter_equal(BplusIter iter1, BplusIter iter2);
+
+size_t bplus_height(BplusTreeNode* root);
 
 static inline BplusIter bplus_iter_next(BplusIter iter) {
   BplusIter next;
@@ -40,10 +47,12 @@ static inline BplusIter bplus_iter_next(BplusIter iter) {
   }
 }
 
-/* private */
-BplusTreeNode* bplus_split_leaf(BplusTreeNode* node, KeyType inserted_entry, size_t insert_pos);
-BplusTreeNode* bplus_split_inner(BplusTreeNode* node, KeyType inserted_entry, BplusTreeNode* inserted_node, size_t insert_pos);
+static inline KeyType bplus_iter_get_key(BplusIter iter) {
+  return iter.node->elems[iter.index];
+}
 
-
+static inline bool bplus_iter_equal(BplusIter iter1, BplusIter iter2) {
+  return iter1.node == iter2.node && iter1.index == iter2.index;
+}
 
 #endif

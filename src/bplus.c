@@ -11,6 +11,10 @@ static BplusIter bplus_find_insert_pos_rec(BplusTreeNode* node, KeyType key);
 static inline size_t bplus_find_nodeptr(BplusTreeNode* node, BplusTreeNode* ptr);
 static BplusTreeNode* bplus_rebalance_leaf(BplusTreeNode* node);
 static BplusTreeNode* bplus_rebalance_inner(BplusTreeNode* node);
+static void bplus_update_deleted_key_in_inner_node(BplusTreeNode* update_node, KeyType key);
+static BplusTreeNode* bplus_split_leaf(BplusTreeNode* node, KeyType inserted_entry, size_t insert_pos);
+static BplusTreeNode* bplus_split_inner(BplusTreeNode* node, KeyType inserted_entry, BplusTreeNode* inserted_node, size_t insert_pos);
+
 
 
 BplusTreeNode* bplus_create(KeyType key) {
@@ -34,6 +38,15 @@ void bplus_delete(BplusTreeNode* node) {
       bplus_delete(nodeptr[i]);
   }
   free(node);
+}
+
+BplusIter bplus_search(BplusTreeNode* node, KeyType key) {
+  BplusIter iter = bplus_search_not_below(node, key);
+  if (iter.node && iter.node->elems[iter.index] != key) {
+    iter.node = NULL;
+    iter.index = 0;
+  }
+  return iter;
 }
 
 BplusIter bplus_search_above(BplusTreeNode* node, KeyType key) {
@@ -207,14 +220,27 @@ BplusTreeNode* bplus_insert(BplusTreeNode* root, KeyType key) {
   return new_root;
 }
 
+size_t bplus_height(BplusTreeNode* root) {
+  size_t height = 1;
+  while (root->nodeptr[0]) {
+    root = root->nodeptr[0];
+    height++;
+  }
+  return height;
+}
+
 BplusTreeNode* bplus_erase(BplusTreeNode* root, BplusIter iter) {
   if (!iter.node) return NULL;
   /* remove the element */
   memmove(iter.node->elems + iter.index, iter.node->elems + iter.index + 1, (iter.node->elem_no - iter.index - 1) * sizeof (KeyType));
   iter.node->elem_no--;
   /* no need to rebalance this leaf node */
-  if (iter.node->elem_no >= BPLUS_ELEM_NO / 2)
+  if (iter.node->elem_no >= BPLUS_ELEM_NO / 2) {
+    if (iter.index == 0) {
+      bplus_update_deleted_key_in_inner_node(iter.node, iter.node->elems[0]);
+    }
     return root;
+  }
 
   BplusTreeNode* node = iter.node;
   if (!node->father) {  /* 'node' is root */
@@ -250,7 +276,7 @@ BplusTreeNode* bplus_erase(BplusTreeNode* root, BplusIter iter) {
   }
 }
 
-BplusTreeNode* bplus_split_leaf(BplusTreeNode* node, KeyType inserted_entry, size_t insert_pos) {
+static BplusTreeNode* bplus_split_leaf(BplusTreeNode* node, KeyType inserted_entry, size_t insert_pos) {
   BplusTreeNode* right_node = (BplusTreeNode*)malloc(sizeof (BplusTreeNode));
   if (!right_node) return NULL;
   size_t right_elem_no = (node->elem_no + 1) / 2;
@@ -276,7 +302,7 @@ BplusTreeNode* bplus_split_leaf(BplusTreeNode* node, KeyType inserted_entry, siz
   return right_node;
 }
 
-BplusTreeNode* bplus_split_inner(BplusTreeNode* node, KeyType inserted_entry, BplusTreeNode* inserted_node, size_t insert_pos) {
+static BplusTreeNode* bplus_split_inner(BplusTreeNode* node, KeyType inserted_entry, BplusTreeNode* inserted_node, size_t insert_pos) {
   BplusTreeNode* right_node = (BplusTreeNode*)malloc(sizeof (BplusTreeNode));
   if (!right_node) return NULL;
   size_t right_elem_no = (node->elem_no - 1) / 2;
@@ -341,6 +367,7 @@ static BplusTreeNode* bplus_rebalance_inner(BplusTreeNode* node) {
         right_sibling->nodeptr[i]->father = node;
       memmove(father->elems + sibling_index - 1, father->elems + sibling_index, (father->elem_no - sibling_index) * sizeof (KeyType));
       memmove(father->nodeptr + sibling_index, father->nodeptr + sibling_index + 1, (father->elem_no - sibling_index) * sizeof (BplusTreeNode*));
+      father->elem_no--;
       free(right_sibling);
       return node;
     }
@@ -363,10 +390,23 @@ static BplusTreeNode* bplus_rebalance_inner(BplusTreeNode* node) {
         node->nodeptr[i]->father = left_sibling;
       memmove(father->elems + index - 1, father->elems + index, (father->elem_no - index) * sizeof (KeyType));
       memmove(father->nodeptr + index, father->nodeptr + index + 1, (father->elem_no - index) * sizeof (BplusTreeNode*));
+      father->elem_no--;
       free(node);
       return left_sibling;
     }
   }
+}
+
+static void bplus_update_deleted_key_in_inner_node(BplusTreeNode* update_node, KeyType key) {
+  while (update_node->father) {
+    if (update_node->father->nodeptr[0] != update_node)
+      break;
+    update_node = update_node->father;
+  }
+  if (!(update_node = update_node->father))
+    return;
+  size_t pos = bplus_find_insert_pos(update_node, key);
+  update_node->elems[pos - 1] = key;
 }
 
 static BplusTreeNode* bplus_rebalance_leaf(BplusTreeNode* node) {
@@ -387,14 +427,20 @@ static BplusTreeNode* bplus_rebalance_leaf(BplusTreeNode* node) {
       node->elems[node->elem_no++] = right_sibling->elems[0];
       memmove(right_sibling->elems, right_sibling->elems + 1, --right_sibling->elem_no * sizeof (KeyType));
       father->elems[index] = right_sibling->elems[0];
+      if (node->elem_no == 1)
+        bplus_update_deleted_key_in_inner_node(node, node->elems[0]);
       return NULL;
     } else {
+      size_t node_origin_size = node->elem_no;
       memcpy(node->elems + node->elem_no, right_sibling->elems, right_sibling->elem_no * sizeof (KeyType));
       node->elem_no += right_sibling->elem_no;
       memmove(father->elems + sibling_index - 1, father->elems + sibling_index, (father->elem_no - sibling_index) * sizeof (KeyType));
       memmove(father->nodeptr + sibling_index, father->nodeptr + sibling_index + 1, (father->elem_no - sibling_index) * sizeof (BplusTreeNode*));
+      father->elem_no--;
       node->nodeptr[BPLUS_ELEM_NO] = bplus_right_sibling(right_sibling);
       free(right_sibling);
+      if (node_origin_size == 0)
+        bplus_update_deleted_key_in_inner_node(node, node->elems[0]);
       return node;
     }
   } else {
@@ -409,6 +455,7 @@ static BplusTreeNode* bplus_rebalance_leaf(BplusTreeNode* node) {
       left_sibling->elem_no += node->elem_no;
       memmove(father->elems + index - 1, father->elems + index, (father->elem_no - index) * sizeof (KeyType));
       memmove(father->nodeptr + index, father->nodeptr + index + 1, (father->elem_no - index) * sizeof (BplusTreeNode*));
+      father->elem_no--;
       left_sibling->nodeptr[BPLUS_ELEM_NO] = bplus_right_sibling(node);
       free(node);
       return left_sibling;
